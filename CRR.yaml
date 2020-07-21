@@ -1,0 +1,513 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create MySQL Aurora instance.
+Outputs:
+  EndpointAddress:
+    Description: The connection endpoint for the database
+    Value:
+      'Fn::GetAtt': 
+        - AuroraClusterDR
+        - Endpoint.Address
+  EndpointPort:
+    Description: The connection endpoint port for the database
+    Value:
+      'Fn::GetAtt':
+        - AuroraClusterDR
+        - Endpoint.Port
+  DBIdentifier:
+    Description: DBIdentifier
+    Value:
+      Ref: AuroraClusterDR
+  MySQLClientEC2SecurityGroup:
+    Description: ID of the security group for MySQL Client - use this for app nodes that need access to this MySQL
+    Value:
+      Fn::GetAtt:
+      - MySQLClientEC2SecurityGroup
+      - GroupId
+  MySQLRDSSecurityGroup:
+    Description: ID of the security group for MySQL cluster nodes.
+    Value:
+      Fn::GetAtt:
+      - MySQLRDSSecurityGroup
+      - GroupId
+  RDSKmsKeyArn:
+    Description: The arn of the aws rds kms key
+    Value:
+      Fn::GetAtt:
+        - RDSKmsKey
+        - Arn
+Conditions:
+  MySQLIHPCidr12Exist: !Equals [!Ref MySQLIHPCidrCount, 11]
+  MySQLIHPCidr11Exist:  !Or [Condition: MySQLIHPCidr12Exist,  !Equals [!Ref MySQLIHPCidrCount, 11]]
+  MySQLIHPCidr10Exist:  !Or [Condition: MySQLIHPCidr11Exist,  !Equals [!Ref MySQLIHPCidrCount, 10]]
+  MySQLIHPCidr9Exist:   !Or [Condition: MySQLIHPCidr10Exist,  !Equals [!Ref MySQLIHPCidrCount,  9]]
+  MySQLIHPCidr8Exist:   !Or [Condition: MySQLIHPCidr9Exist,   !Equals [!Ref MySQLIHPCidrCount,  8]]
+  MySQLIHPCidr7Exist:   !Or [Condition: MySQLIHPCidr8Exist,   !Equals [!Ref MySQLIHPCidrCount,  7]]
+  MySQLIHPCidr6Exist:   !Or [Condition: MySQLIHPCidr7Exist,   !Equals [!Ref MySQLIHPCidrCount,  6]]
+  MySQLIHPCidr5Exist:   !Or [Condition: MySQLIHPCidr6Exist,   !Equals [!Ref MySQLIHPCidrCount,  5]]
+  MySQLIHPCidr4Exist:   !Or [Condition: MySQLIHPCidr5Exist,   !Equals [!Ref MySQLIHPCidrCount,  4]]
+  MySQLIHPCidr3Exist:   !Or [Condition: MySQLIHPCidr4Exist,   !Equals [!Ref MySQLIHPCidrCount,  3]]
+  MySQLIHPCidr2Exist:   !Or [Condition: MySQLIHPCidr3Exist,   !Equals [!Ref MySQLIHPCidrCount,  2]]
+  MySQLIHPCidr1Exist:   !Or [Condition: MySQLIHPCidr2Exist,   !Equals [!Ref MySQLIHPCidrCount,  1]]
+  ReadReplica:
+    Fn::Equals:
+    - Ref: NeedReadReplica
+    - 'yes'
+  DRReadReplica:
+    Fn::Equals:
+    - Ref: DRReadReplica
+    - 'yes'
+  MasterDB:
+    Fn::Equals:
+    - Ref: DRReadReplica
+    - 'no'
+
+Parameters:
+  BackupRetentionPeriod:
+    Default: '3'
+    Description: The number of days during which automatic DB snapshots are retained.
+    Type: String
+  DBInstanceClass:
+    Default: db.r3.large
+    Description: The name of the compute and memory capacity classes of the DB instance.
+    Type: String
+  Engine:
+    Default: aurora-mysql
+    Description: The database engine that the DB instance uses.
+    Type: String
+  EngineVersion:
+    Default: 5.7.mysql_aurora.2.04.1.1
+    Description: The version number of the database engine that the DB instance uses.
+    Type: String
+  MasterUsername:
+    AllowedPattern: '[a-zA-Z0-9]*'
+    Description: Username of mysql DB
+    Type: String
+  MasterUserPassword:
+    AllowedPattern: '[^/"@]*'
+    Description: Password of mysql DB
+    Type: String
+  # MasterUserPassword:
+  #   Default: aurora_passwd
+  #   Description: Password of mysql DB
+  #   Type: AWS::SSM::Parameter::Value<SecureString>
+  MultiAZ:
+    Default: true
+    Description: Specifies if the DB instance is a Multi-AZ deployment.
+    Type: String
+  Port:
+    Default: 3306
+    Description: Port of mysql
+    Type: String
+  StorageEncrypted:
+    Default: true
+    Description: Storage encrypted/non encrypted
+    Type: String
+  TagPrefix:
+    Description: Prefix for Tags
+    Type: String
+  TagComponent:
+    Description: 'Tag for the intuit:billing:component'
+    Type: String
+    Default: changeme
+  TagEnv:
+    Description: 'Tag for the intuit:billing:env'
+    Type: String
+    Default: changeme
+  VpcId:
+    Description: VPC ID
+    Type: 'AWS::EC2::VPC::Id'
+  SubnetIds:
+    Description: Comma-separated list of existing private subnet IDs in your VPC over
+    Type: CommaDelimitedList
+  DBName:
+    Description: The name of the DB instance that was provided at the time of creation
+    Type: String
+  S3BucketName:
+    Default: ''
+    Description: 'Name of public S3 bucket, CF templates to be accessed.'
+    Type: String
+  MySQLPrameterGroup:
+    Default: ''
+    Description: Name of DB Parameter Group template.
+    Type: String
+  DestinationRegion:
+    Description: DR region.
+    Type: String
+  AllowMajorVersionUpgrade:
+    Description: Version upgrade will not happen automatically.
+    Type: String
+    Default: false
+  Family:
+    Default: aurora-mysql5.7
+    Description: Family of DB version.
+    Type: String
+  MySQLIHPCidrs:
+    Description: MySQL nodes cidr blocks in IHP that need to replicate to/from this cluster, for now support up to 31, but more can be added as needed
+    Type: CommaDelimitedList
+    Default: 127.0.0.1/32
+  MySQLIHPCidrCount:
+    Description: Number of CIDRS includes in MySQLIHPCidrs - 1, calculated in driver script and passed in, so it matches the index number
+    Type: String
+  NeedReadReplica:
+    Description: yes or no to indicate if ReadReplica required
+    Type: String
+  DRReadReplica:
+    Description: yes or no to indicate if this is just a DR site.
+    Type: String
+  SourceRegion:
+    Description: MasterDB region - Required by Read replica in DR.
+    Type: String
+  DestinationRegion:
+    Description: DR region.
+    Type: String
+  MasterDBARN:
+    Description: Master DB identifier required by DR read replica.
+    Type: String
+  MasterClusterARN:
+    Description: Master cluster identifier required by DR read replica.
+    Type: String
+Resources:
+  AuroraClusterDR:
+    Properties:
+      Engine: !Ref Engine
+      EngineVersion: !Ref EngineVersion
+      DBSubnetGroupName:
+        Ref: MyDBSubnetGroupName
+      BackupRetentionPeriod:
+        Ref: BackupRetentionPeriod
+      VpcSecurityGroupIds:
+        - Ref: MySQLRDSSecurityGroup
+      KmsKeyId:
+        Ref: RDSKmsKey
+      StorageEncrypted:
+        Ref: StorageEncrypted
+      DBClusterParameterGroupName:
+        Ref: RDSDBClusterParameterGroup
+      ReplicationSourceIdentifier: !Ref MasterClusterARN
+      SourceRegion:
+        Ref: SourceRegion
+    Type: 'AWS::RDS::DBCluster'
+  DRREADREPLICA:
+    Condition: DRReadReplica
+    Properties:
+      DBClusterIdentifier: !Ref AuroraClusterDR
+      Engine: !Ref Engine
+      EngineVersion: !Ref EngineVersion
+      DBInstanceClass:
+        Ref: DBInstanceClass
+      DBSubnetGroupName:
+        Ref: MyDBSubnetGroupName
+      DBInstanceIdentifier:
+        'Fn::Join':
+          - ''
+          - - Ref: TagPrefix
+            - n2
+      Tags:
+        - Key: 'intuit:billing:appenv'
+          Value:
+            Ref: TagEnv
+        - Key: 'intuit:billing:bu'
+          Value:
+            'Fn::Join':
+            - ''
+            - - 'ctodev-'
+              - Ref: TagComponent
+        - Key: 'intuit:billing:component'
+          Value:
+            Ref: TagComponent
+      DBParameterGroupName:
+        Ref: AuroraDBSQLParamGroup
+    Type: 'AWS::RDS::DBInstance'
+  MyDBSubnetGroupName:
+    Properties:
+      DBSubnetGroupDescription: String
+      SubnetIds:
+        Ref: SubnetIds
+    Type: 'AWS::RDS::DBSubnetGroup'
+  AuroraDBSQLParamGroup:
+    Type: 'AWS::RDS::DBParameterGroup'
+    Properties:
+      Family: aurora-mysql5.7
+      Description: CloudFormation Database Parameter Group
+      Parameters:
+        sql_mode: 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'
+      Tags:
+        - Key: 'intuit:billing:appenv'
+          Value:
+            Ref: TagEnv
+        - Key: 'intuit:billing:bu'
+          Value:
+            'Fn::Join':
+            - ''
+            - - 'ctodev-'
+              - Ref: TagComponent
+        - Key: 'intuit:billing:component'
+          Value:
+            Ref: TagComponent
+  RDSDBClusterParameterGroup:
+    Type: 'AWS::RDS::DBClusterParameterGroup'
+    Properties:
+      Family: aurora-mysql5.7
+      Description: CloudFormation Database Parameter Group
+      Parameters:
+        character_set_database: utf32
+        binlog_format: ROW
+  MySQLClientEC2SecurityGroup:
+    Properties:
+      GroupDescription: MySQL Client SG, use this for Services app nodes that need access to this MySQL.
+      VpcId:
+        Ref: VpcId
+      Tags:
+        - Key: 'Name'
+          Value:
+            'Fn::Join':
+            - ''
+            - - Ref: TagPrefix
+              - '-client-sg'
+    Type: AWS::EC2::SecurityGroup
+  MySQLRDSSecurityGroup:
+    Properties:
+      GroupDescription: MySQL Tier SG
+      SecurityGroupIngress:
+      - FromPort: '3306'
+        IpProtocol: tcp
+        SourceSecurityGroupId:
+          Ref: MySQLClientEC2SecurityGroup
+        ToPort: '3306'
+      Tags:
+        - Key: 'Name'
+          Value:
+            'Fn::Join':
+            - ''
+            - - Ref: TagPrefix
+              - '-rds-sg'
+      VpcId:
+        Ref: VpcId
+    Type: AWS::EC2::SecurityGroup
+  MySQLRDSSecurityGroupIngressCqlPort:
+    Properties:
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      SourceSecurityGroupId:
+        Ref: MySQLRDSSecurityGroup
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP0:
+    Properties:
+      CidrIp: !Select [0, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP1:
+    Condition: MySQLIHPCidr1Exist
+    Properties:
+      CidrIp: !Select [1, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP2:
+    Condition: MySQLIHPCidr2Exist
+    Properties:
+      CidrIp: !Select [2, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP3:
+    Condition: MySQLIHPCidr3Exist
+    Properties:
+      CidrIp: !Select [3, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP4:
+    Condition: MySQLIHPCidr4Exist
+    Properties:
+      CidrIp: !Select [4, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP5:
+    Condition: MySQLIHPCidr5Exist
+    Properties:
+      CidrIp: !Select [5, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP6:
+    Condition: MySQLIHPCidr6Exist
+    Properties:
+      CidrIp: !Select [6, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP7:
+    Condition: MySQLIHPCidr7Exist
+    Properties:
+      CidrIp: !Select [7, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP8:
+    Condition: MySQLIHPCidr8Exist
+    Properties:
+      CidrIp: !Select [8, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP9:
+    Condition: MySQLIHPCidr9Exist
+    Properties:
+      CidrIp: !Select [9, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP10:
+    Condition: MySQLIHPCidr10Exist
+    Properties:
+      CidrIp: !Select [10, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP11:
+    Condition: MySQLIHPCidr11Exist
+    Properties:
+      CidrIp: !Select [11, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  MySQLRDSSecurityGroupIngressReplFromIHP12:
+    Condition: MySQLIHPCidr12Exist
+    Properties:
+      CidrIp: !Select [12, !Ref MySQLIHPCidrs]
+      FromPort: '3306'
+      GroupId:
+        Ref: MySQLRDSSecurityGroup
+      IpProtocol: tcp
+      ToPort: '3306'
+    Type: AWS::EC2::SecurityGroupIngress
+  AdminKeyManagerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            AWS:
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:iam::'
+                - Ref: AWS::AccountId
+                - ":root"
+          Action: sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AWSKeyManagementServicePowerUser
+  # technically we can rename this to KmsKey, but that'll require a KMS key replacement, so keep this for now.
+  RDSKmsKey:
+    Type: AWS::KMS::Key
+    DependsOn: AdminKeyManagerRole
+    Properties:
+      Description: KMS Key used by RDS
+      Enabled: true
+      EnableKeyRotation: true
+      KeyPolicy:
+        Id: KeyPolicy
+        Version: '2012-10-17'
+        Statement:
+        - Sid: Allow Root to manage key
+          Effect: Allow
+          Principal:
+            AWS:
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:iam::'
+                - Ref: AWS::AccountId
+                - ":root"
+          Action: kms:*
+          Resource: "*"
+        - Sid: Allow Admin to manage Key
+          Effect: Allow
+          Principal:
+            AWS:
+            - Fn::Join:
+              - ''
+              - - 'arn:aws:iam::'
+                - Ref: AWS::AccountId
+                - ":role/"
+                - Ref: AdminKeyManagerRole
+          Action:
+          - kms:Create*
+          - kms:Describe*
+          - kms:Enable*
+          - kms:List*
+          - kms:Put*
+          - kms:Update*
+          - kms:Revoke*
+          - kms:Disable*
+          - kms:Get*
+          - kms:Delete*
+          - kms:ScheduleKeyDeletion
+          - kms:CancelKeyDeletion
+          Resource: "*"
+      Tags:
+      - Key: Name
+        Value: RDS-KmsKey
+  RDSKmsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: #alias/RDS-KmsKey
+        'Fn::Join':
+          - ''
+          - - 'alias/RDS-'
+            - Ref: TagPrefix
+      TargetKeyId:
+        Ref: RDSKmsKey
+  RdsErrorLog:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        'Fn::Join':
+          - ''
+          - - '/aws/rds/cluster/'
+            - Ref: AuroraClusterDR
+            - '/error'
+      RetentionInDays: 7
